@@ -1459,13 +1459,15 @@ class Armory_Json_Rpc_Server(jsonrpc.JSONRPC):
          txHashHex = binary_to_hex(txHashBin, BIGENDIAN)
 
          cppTx = TheBDM.bdv().getTxByHash(txHashBin)
-         if not cppTx.isInitialized():
+         if not cppTx or not cppTx.isInitialized():
             LOGERROR('Tx hash not recognized by TheBDM: %s' % txHashHex)
+            continue
 
          #cppHead = cppTx.getHeaderPtr()
          cppHead = TheBDM.bdv().getHeaderPtrForTx(cppTx)
-         if not cppHead.isInitialized:
+         if not cppHead or not cppHead.isInitialized():
             LOGERROR('Header pointer is not available!')
+            continue
 
          blockIndex = cppTx.getBlockTxIndex()
          blockHash  = binary_to_hex(cppHead.getThisHash(), BIGENDIAN)
