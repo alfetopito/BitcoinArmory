@@ -92,6 +92,7 @@
 
 import decimal
 import base64
+import json
 
 from twisted.cred.checkers import FilePasswordDB
 from twisted.internet import reactor
