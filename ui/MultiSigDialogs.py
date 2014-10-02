@@ -26,7 +26,7 @@ class DlgLockboxEditor(ArmoryDialog):
       super(DlgLockboxEditor, self).__init__(parent, main)
 
       lblDescr = QRichLabel(tr("""
-         <b><u><font size=5 color="%s">Multi-signature Lockboxes</font></u>  
+         <b><u><font size=5 color="%s">Create Multi-signature Lockbox</font></u>  
          """) % htmlColor("TextBlue"), hAlign=Qt.AlignHCenter)
 
       lblDescr2 = QRichLabel(tr("""
@@ -111,7 +111,7 @@ class DlgLockboxEditor(ArmoryDialog):
 
 
          addrWidgets = self.main.createAddressEntryWidgets(self, '', 60, 2, 
-                                       getPubKey=True, showLockBoxes=False)
+                                       getPubKey=True, showLockboxes=False)
          self.widgetMap[i]['QLE_PUBK'] = addrWidgets['QLE_ADDR']
          self.widgetMap[i]['BTN_BOOK'] = addrWidgets['BTN_BOOK']
          self.widgetMap[i]['LBL_DETECT']=addrWidgets['LBL_DETECT']
@@ -231,7 +231,7 @@ class DlgLockboxEditor(ArmoryDialog):
 
       lblBelowM = QRichLabel(tr('<b>Required Signatures (M)</b> '), \
                                        hAlign=Qt.AlignHCenter, doWrap=False)
-      lblBelowN = QRichLabel(tr('<b>Total Public Keys (N)</b> '), \
+      lblBelowN = QRichLabel(tr('<b>Total Signers (N)</b> '), \
                                        hAlign=Qt.AlignHCenter, doWrap=False)
 
       lblOfStr = QRichLabel(tr(' - OF - '))
@@ -243,7 +243,6 @@ class DlgLockboxEditor(ArmoryDialog):
 
 
       layoutMNSelect = QGridLayout()
-      layoutMNSelect.addWidget(lblMNSelect,     0,0, 1,9)
       layoutMNSelect.addWidget(self.comboM,     1,2)
       layoutMNSelect.addWidget(lblOfStr,        1,4)
       layoutMNSelect.addWidget(self.comboN,     1,6)
@@ -323,7 +322,7 @@ class DlgLockboxEditor(ArmoryDialog):
    #############################################################################
    def setLongDescr(self):
 
-      class DlgSetLongDescr(QDialog):
+      class DlgSetLongDescr(ArmoryDialog):
          def __init__(self, parent, currDescr=''):
             super(DlgSetLongDescr, self).__init__(parent)
             lbl = QRichLabel(tr("""
@@ -647,7 +646,7 @@ class DlgLockboxManager(ArmoryDialog):
          extraTxt = tr('<br>Double-click on a lockbox to edit')
 
       lblDescr = QRichLabel(tr("""
-         <font color="%s" size=4><b>Manage Multi-Sig Lockbox Info</b></font>
+         <font color="%s" size=4><b>Manage Multi-Sig Lockboxes</b></font>
          %s""") % (htmlColor('TextBlue'), extraTxt), hAlign=Qt.AlignHCenter)
       
       frmDescr = makeVertFrame([lblDescr], STYLE_RAISED)
@@ -1238,6 +1237,7 @@ class DlgLockboxManager(ArmoryDialog):
       frmSingleLayout.setColumnStretch(2,1)
       frmSingleLayout.setColumnStretch(3,1)
       frmSingleLayout.setSpacing(1)
+      frmSingleLayout.setColumnMinimumWidth(0,100)
 
       frmSingle.setLayout(frmSingleLayout)
       frmSingle.setFrameStyle(STYLE_STYLED)
@@ -1270,6 +1270,9 @@ class DlgLockboxManager(ArmoryDialog):
       frmMultiLayout.setColumnStretch(2,1)
       frmMultiLayout.setColumnStretch(3,1)
       frmMultiLayout.setSpacing(1)
+      frmMultiLayout.setRowMinimumHeight(1,100)
+      frmMultiLayout.setRowMinimumHeight(2,100)
+      frmMultiLayout.setColumnMinimumWidth(0,100)
 
       frmMulti.setLayout(frmMultiLayout)
       frmMulti.setFrameStyle(STYLE_STYLED)
@@ -1327,6 +1330,7 @@ class DlgLockboxManager(ArmoryDialog):
       lboxId  = str(self.ledgerView.model().index(row, LEDGERCOLS.WltID).data().toString())
       lbox = self.main.allLockboxes[self.main.lockboxIDMap[lboxId]]
       wltID = None
+      wlt = None
       for a160 in lbox.a160List:
          wltID = self.main.getWalletForAddr160(a160)
          if len(wltID)>0:
@@ -1394,7 +1398,10 @@ class DlgLockboxManager(ArmoryDialog):
 
       if True:  actionCopyAddr    = menu.addAction("Copy P2SH address")
       if True:  actionShowQRCode  = menu.addAction("Display address QR code")
-      if not USE_TESTNET:  actionBlkChnInfo  = menu.addAction("View address on %s" % BLOCKEXPLORE_NAME)
+      if not USE_TESTNET:
+         actionBlkChnInfo  = menu.addAction("View address on %s" % BLOCKEXPLORE_NAME)
+      else:
+         actionBlkChnInfo = None
       if True:  actionReqPayment  = menu.addAction("Request payment to this lockbox")
       if dev:   actionCopyHash160 = menu.addAction("Copy hash160 value (hex)")
       if True:  actionCopyBalance = menu.addAction("Copy balance")
@@ -2051,7 +2058,7 @@ class DlgSimulfundSelect(ArmoryDialog):
       self.accept()
 
 ################################################################################
-class DlgImportAsciiBlock(QDialog):
+class DlgImportAsciiBlock(ArmoryDialog):
    def __init__(self, parent, main, titleStr, descrStr, fileTypes, importType):
       super(DlgImportAsciiBlock, self).__init__(parent)
       self.main = main
@@ -2127,7 +2134,7 @@ class DlgSelectPublicKey(ArmoryDialog):
          addresses most users are accustomed to.  A public key is much longer
          than a regular bitcoin address, usually starting with "02", "03" or
          "04".  Once you have selected a public key, send it to the lockbox 
-         organizer (person or device).  The oragnizer will create the lockbox 
+         organizer (person or device).  The organizer will create the lockbox 
          which then must be imported by all devices that will track the funds
          and/or sign transactions.
          <br><br>
@@ -2164,7 +2171,7 @@ class DlgSelectPublicKey(ArmoryDialog):
       frmDescr = makeVertFrame([lblDescr], STYLE_RAISED)
 
       addrWidgets = self.main.createAddressEntryWidgets(self, '', 60, 2, 
-                                       getPubKey=True, showLockBoxes=False)
+                                       getPubKey=True, showLockboxes=False)
 
       self.edtPubKey   = addrWidgets['QLE_ADDR']
       self.btnAddrBook = addrWidgets['BTN_BOOK']
@@ -2363,7 +2370,7 @@ class DlgExportAsciiBlock(ArmoryDialog):
 
 
 ################################################################################
-class DlgImportLockbox(QDialog):
+class DlgImportLockbox(ArmoryDialog):
    def __init__(self, parent, main):
       super(DlgImportLockbox, self).__init__(parent)
       self.main = main
@@ -2419,7 +2426,6 @@ class DlgImportLockbox(QDialog):
          self.importedLockbox = MultiSigLockbox().unserializeAscii(txt)
       except:
          LOGEXCEPT('Error unserializing the entered text')
-         return
       if self.importedLockbox == None:
          QMessageBox.critical(self, tr('Non-lockbox'), tr("""
                You are attempting to load something that is not a Lockbox.
@@ -3085,7 +3091,7 @@ class DlgMultiSpendReview(ArmoryDialog):
 class DlgCreatePromNote(ArmoryDialog):
 
    #############################################################################
-   def __init__(self, parent, main, defaultID=None, skipExport=False):
+   def __init__(self, parent, main, defaultIDorAddr=None, skipExport=False):
       super(DlgCreatePromNote, self).__init__(parent, main)
 
       self.finalPromNote = None
@@ -3137,8 +3143,11 @@ class DlgCreatePromNote(ArmoryDialog):
       lblBTC2    = QRichLabel(tr('BTC'))
 
       startStr = ''
-      if defaultID:
-         startStr = createLockboxEntryStr(defaultID)
+      if defaultIDorAddr:
+         if checkAddrStrValid(defaultIDorAddr):
+            startStr = defaultIDorAddr
+         else:
+            startStr = createLockboxEntryStr(defaultIDorAddr)
 
       aewMap = self.main.createAddressEntryWidgets(self, startStr, 
                                        maxDetectLen=72, boldDetectParts=2)
@@ -3553,19 +3562,28 @@ class DlgMergePromNotes(ArmoryDialog):
 
       btnCancel = QPushButton(tr('Cancel'))
       self.chkBareMS = QCheckBox(tr('Use bare multisig (no P2SH)'))
+      self.ttipBareMS = self.main.createToolTipWidget( tr("""
+         EXPERT OPTION:  Do not check this box unless you know what it means
+                         and you need it!  Forces Armory to exposes public 
+                         keys to the blockchain before the funds are spent.  
+                         This is only needed for very specific use cases, 
+                         and otherwise creates blockchain bloat."""))
       btnFinish = QPushButton(tr('Continue'))
       self.connect(btnCancel, SIGNAL('clicked()'), self.reject)
       self.connect(btnFinish, SIGNAL('clicked()'), self.mergeNotesCreateUSTX)
       frmButtons = makeHorizFrame([btnCancel, 
                                    'Stretch', 
                                    self.chkBareMS, 
+                                   self.ttipBareMS,
                                    btnFinish])
 
       # If this was opened with default lockbox, set visibility, save ms script
       # If opened generic, this will be set first time importNote() is called
       self.chkBareMS.setVisible(False)
+      self.ttipBareMS.setVisible(False)
       if self.lbox is not None:
          self.chkBareMS.setVisible(True)
+         self.ttipBareMS.setVisible(True)
          self.msTarget = self.lbox.binScript   
 
       
@@ -3619,14 +3637,17 @@ class DlgMergePromNotes(ArmoryDialog):
          return
             
   
-      lbID = None
+      defaultTarg = None
       if self.promMustMatch:
          for lbox in self.main.allLockboxes:
             if lbox.p2shScrAddr == self.promMustMatch:
-               lbID = lbox.uniqueIDB58
+               defaultTarg = lbox.uniqueIDB58
+               break
+         else:
+            defaultTarg = scrAddr_to_addrStr(self.promMustMatch)
                
          
-      dlg = DlgCreatePromNote(self, self.main, lbID, skipExport=True)
+      dlg = DlgCreatePromNote(self, self.main, defaultTarg, skipExport=True)
       dlg.exec_()
       if dlg.finalPromNote:
          self.addNote(dlg.finalPromNote)
@@ -3660,6 +3681,7 @@ class DlgMergePromNotes(ArmoryDialog):
          # then provide the option to use bare multi-sig (which may be 
          # desriable in certain contexts).
          self.chkBareMS.setVisible(False)
+         self.ttipBareMS.setVisible(False)
          for lbID,cppWlt in self.main.cppLockboxWltMap.iteritems():
             if cppWlt.hasScrAddress(promTarget):
                LOGINFO('Have lockbox for the funding target: %s' % lbID)
@@ -3667,7 +3689,8 @@ class DlgMergePromNotes(ArmoryDialog):
                if lb and lb.binScript and \
                       getTxOutScriptType(lb.binScript)==CPP_TXOUT_MULTISIG:
                   self.msTarget = lb.binScript   
-                  self.chkBareMS.setVisible(True)                   
+                  self.chkBareMS.setVisible(True)  
+                  self.ttipBareMS.setVisible(True)                 
                   break
                
 
@@ -3781,12 +3804,9 @@ class DlgMergePromNotes(ArmoryDialog):
          the final transaction.""")
       ftypes = ['Signature Collectors (*.sigcollect.tx)']
       defaultFN = 'Simulfund_%s.sigcollect.tx' % ustx.uniqueIDB58
-         
-      if DlgExportAsciiBlock(self, self.main, ustx, title, descr, 
-                                                    ftypes, defaultFN).exec_():
-         # Assume that it has been exported
-         self.accept()
-         DlgMultiSpendReview(self, self.main, ustx).exec_()
+      
+      self.accept()
+      DlgMultiSpendReview(self, self.main, ustx).exec_()
 
 
 

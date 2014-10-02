@@ -50,7 +50,7 @@ from qrcodenative import QRCode, QRErrorCorrectLevel
 
 
 # Version Numbers
-BTCARMORY_VERSION    = (0, 91,  99, 9)  # (Major, Minor, Bugfix, AutoIncrement)
+BTCARMORY_VERSION    = (0, 92,  1, 0)  # (Major, Minor, Bugfix, AutoIncrement)
 PYBTCWALLET_VERSION  = (1, 35,  0, 0)  # (Major, Minor, Bugfix, AutoIncrement)
 
 ARMORY_DONATION_ADDR = '1ArmoryXcfq7TnCSuZa9fQjRYwJ4bkRKfv'
@@ -102,6 +102,7 @@ parser.add_option("--nospendzeroconfchange",dest="ignoreAllZC",default=False, ac
 parser.add_option("--multisigfile",  dest="multisigFile",  default='DEFAULT', type='str',          help="File to store information about multi-signature transactions")
 parser.add_option("--force-wallet-check", dest="forceWalletCheck", default=False, action="store_true", help="Force the wallet sanity check on startup")
 parser.add_option("--disable-modules", dest="disableModules", default=False, action="store_true", help="Disable looking for modules in the execution directory")
+parser.add_option("--disable-conf-permis", dest="disableConfPermis", default=False, action="store_true", help="Disable forcing permissions on bitcoin.conf")
 
 # Pre-10.9 OS X sometimes passes a process serial number as -psn_0_xxxxxx. Nuke!
 if sys.platform == 'darwin':
@@ -735,19 +736,6 @@ def LOGEXCEPT(msg, *a):
 
 
 
-DEFAULT_CONSOLE_LOGTHRESH = logging.WARNING
-DEFAULT_FILE_LOGTHRESH    = logging.INFO
-
-DEFAULT_PPRINT_LOGLEVEL   = logging.DEBUG
-DEFAULT_RAWDATA_LOGLEVEL  = logging.DEBUG
-
-rootLogger = logging.getLogger('')
-if CLI_OPTIONS.doDebug or CLI_OPTIONS.netlog or CLI_OPTIONS.mtdebug:
-   # Drop it all one level: console will see INFO, file will see DEBUG
-   DEFAULT_CONSOLE_LOGTHRESH  -= 20
-   DEFAULT_FILE_LOGTHRESH     -= 20
-
-
 def chopLogFile(filename, size):
    if not os.path.exists(filename):
       print 'Log file doesn\'t exist [yet]'
@@ -775,6 +763,23 @@ chopLogFile(ARMORY_LOG_FILE, 1024*1024)
 
 
 # Now set loglevels
+DEFAULT_CONSOLE_LOGTHRESH = logging.WARNING
+DEFAULT_FILE_LOGTHRESH    = logging.INFO
+
+DEFAULT_PPRINT_LOGLEVEL   = logging.DEBUG
+DEFAULT_RAWDATA_LOGLEVEL  = logging.DEBUG
+
+rootLogger = logging.getLogger('')
+if CLI_OPTIONS.doDebug or CLI_OPTIONS.netlog or CLI_OPTIONS.mtdebug:
+   # Drop it all one level: console will see INFO, file will see DEBUG
+   DEFAULT_CONSOLE_LOGTHRESH  -= 20
+   DEFAULT_FILE_LOGTHRESH     -= 20
+
+if CLI_OPTIONS.logDisable:
+   DEFAULT_CONSOLE_LOGTHRESH  += 100
+   DEFAULT_FILE_LOGTHRESH     += 100
+
+
 DateFormat = '%Y-%m-%d %H:%M'
 logging.getLogger('').setLevel(logging.DEBUG)
 fileFormatter  = logging.Formatter('%(asctime)s (%(levelname)s) -- %(message)s', \
@@ -1254,14 +1259,19 @@ def makeAsciiBlock(binStr, headStr='', wid=64, newline='\n'):
 
 ################################################################################
 def readAsciiBlock(ablock, headStr=''):
-   lines = ablock.strip().split()
-   if not lines[0].startswith('=====%s' % headStr) or \
-      not lines[-1].startswith('======'):
-      LOGERROR('Attempting to unserialize something not an ASCII block')
-      return lines[0].strip('='), None
+   headStr = ''
+   rawData = None
 
-   headStr = lines[0].strip('=')
-   rawData = base64.b64decode(''.join(lines[1:-1]))
+   # Contiue only if we actually get data.
+   if len(ablock) > 0:
+      lines = ablock.strip().split()
+      if not lines[0].startswith('=====%s' % headStr) or \
+         not lines[-1].startswith('======'):
+         LOGERROR('Attempting to unserialize something not an ASCII block')
+         return lines[0].strip('='), None
+
+      headStr = lines[0].strip('=')
+      rawData = base64.b64decode(''.join(lines[1:-1]))
 
    return (headStr, rawData)
 
@@ -1499,10 +1509,6 @@ def scrAddr_to_hash160(scrAddr):
 def addrStr_to_scrAddr(addrStr):
    if not checkAddrStrValid(addrStr):
       BadAddressError('Invalid address: "%s"' % addrStr)
-
-   # Okay this doesn't work because of the issue outlined before, where the
-   # SCRADDR prefixes don't match the ADDRSTR prefixes.  Whoops
-   #return addrBin[:21]
 
    atype, a160 = addrStr_to_hash160(addrStr)
    if atype==ADDRBYTE:
@@ -2900,11 +2906,14 @@ def getRSFromDERSig(derSig):
 
 #############################################################################
 def newBlockSyncRescanZC(bdm, wltMap, prevLedgSize):
-   for wltID in wltMap.keys():
-      wltMap[wltID].syncWithBlockchainLite()
-      bdm.rescanWalletZeroConf(wltMap[wltID].cppWallet)
-      newLedgerSize = len(wltMap[wltID].getTxLedger())
-      if prevLedgSize[wltID] != newLedgerSize:
+   newLedgSize = {}
+   for wltID,wlt in wltMap.iteritems():
+      wlt.syncWithBlockchainLite()
+      bdm.rescanWalletZeroConf(wlt.cppWallet)
+      newLedgSize[wltID] = len(wlt.getTxLedger())
+
+   for wltID,wlt in wltMap.iteritems():
+      if prevLedgSize[wltID] != newLedgSize[wltID]:
          return True
 
    return False
@@ -2916,8 +2925,8 @@ def notifyOnSurpriseTx(blk0, blk1, wltMap, lboxWltMap, isGui, bdm, notifyQueue, 
    # a block. It is a "surprise" when the first time we see it is in a block
    if isGui:
       notifiedAlready = set([ n[1].getTxHash() for n in notifyQueue ])
-      notifyIn  = settings.getSettingOrSetDefault('NotifyBtcIn',  not OS_MACOSX)
-      notifyOut = settings.getSettingOrSetDefault('NotifyBtcOut', not OS_MACOSX)
+      notifyIn  = settings.getSettingOrSetDefault('NotifyBtcIn', True)
+      notifyOut = settings.getSettingOrSetDefault('NotifyBtcOut', True)
 
    for blk in range(blk0, blk1):
       sbh = bdm.getMainBlockFromDB(blk)

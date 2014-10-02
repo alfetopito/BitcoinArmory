@@ -17,6 +17,10 @@ from armoryengine.AsciiSerialize import AsciiSerializable
 
 UNSIGNED_TX_VERSION = 1
 
+SIGHASH_ALL = 1
+SIGHASH_NONE = 2
+SIGHASH_SINGLE = 3
+SIGHASH_ANYONECANPAY = 0x80
 ################################################################################
 # Identify all the codes/strings that are needed for dealing with scripts
 ################################################################################
@@ -894,8 +898,9 @@ def generatePreHashTxMsgToSign(pytx, txInIndex, prevTxOutScript, hashcode=1):
 
    Right now only supports SIGHASH_ALL
    """
-   if not hashcode==1:
-      LOGERROR('Only hashcode=1 is supported at this time!')
+   
+   if not hashcode in [1, SIGHASH_NONE|SIGHASH_ANYONECANPAY]:
+      LOGERROR('Only hashcode=1 and 82 are supported at this time!')
       LOGERROR('Requested hashcode=%d' % hashcode)
       return None
 
@@ -906,6 +911,11 @@ def generatePreHashTxMsgToSign(pytx, txInIndex, prevTxOutScript, hashcode=1):
 
    # Set the script of the TxIn being signed, to the previous TxOut script
    txCopy.inputs[txInIndex].binScript = prevTxOutScript
+   
+   # for SIGHASH_NONE|SIGHASH_ANYONECANPAY remove everything except the current input
+   if hashcode == SIGHASH_NONE|SIGHASH_ANYONECANPAY:
+      txCopy.outputs = []
+      txCopy.inputs = [txCopy.inputs[txInIndex]]
 
    hashCode1  = int_to_binary(hashcode, widthBytes=1)
    hashCode4  = int_to_binary(hashcode, widthBytes=4, endOut=LITTLEENDIAN)
@@ -1142,7 +1152,7 @@ class UnsignedTxInput(AsciiSerializable):
       return zip(self.pubKeys, self.wltLocators)
 
    #############################################################################
-   def createSigScript(self):
+   def createSigScript(self, stripExtraSigs=True):
       """
       Here, we don't care what the orig script was in the TxOut being spent,
       unless it was P2SH.  It's because this method assumes that all the sigs
@@ -1159,14 +1169,11 @@ class UnsignedTxInput(AsciiSerializable):
       to the end of it.
       """
 
-      numPubs = len(filter(lambda x: len(x)>0, self.pubKeys))
-      numSigs = len(filter(lambda x: len(x)>0, self.signatures))
-      scrType = self.scriptType
-
       outScript = ''
 
       if self.scriptType in CPP_TXOUT_STDSINGLESIG and not self.signatures[0]:
          return ''
+
 
       # All signatures are already DER-encoded. 
       if self.scriptType == CPP_TXOUT_P2SH:
@@ -1181,10 +1188,16 @@ class UnsignedTxInput(AsciiSerializable):
          outScript = serSig + serPubKey
       elif self.scriptType==CPP_TXOUT_MULTISIG:
          # Serialize non-empty sigs, replace empty ones with OP_0
+         sigList = self.signatures[:]
+         countSigs = lambda slist: sum([ (1 if s else 0)  for s in slist ])
+         if stripExtraSigs:
+            # Mainnet appears to treat extra sigs as non-std.  Remove if req
+            while countSigs(sigList) > self.sigsNeeded:
+               sigList.pop()
+
          OP_0 = getOpCode('OP_0')
          pushSig = lambda sig: (scriptPushData(sig) if sig else '')
-         serSigList = [pushSig(s) for s in self.signatures]
-         outScript = OP_0 + ''.join(serSigList)
+         outScript = OP_0 + ''.join([pushSig(s) for s in sigList])
       else:
          raise InvalidScriptError('Non-std script, cannot create sig script')
 
@@ -2418,7 +2431,7 @@ class UnsignedTransaction(AsciiSerializable):
 
 
    #############################################################################
-   def getSignedPyTx(self, doVerifySigs=True):
+   def getSignedPyTx(self, doVerifySigs=True, stripExtraSigs=True):
       # Make sure the USTXI list is synchronous with the pytx input list
       if not self.verifyInputsMatchPyTxObj():
          LOGERROR('Invalid USTXI set or ordering')
@@ -2439,7 +2452,7 @@ class UnsignedTransaction(AsciiSerializable):
       # Iterate through the lists
       for iin in range(len(self.ustxInputs)):
          ustxi = self.ustxInputs[iin]
-         sigScript = ustxi.createSigScript()
+         sigScript = ustxi.createSigScript(stripExtraSigs=stripExtraSigs)
          if not sigScript:
             return None
          finalTx.inputs[iin].binScript = sigScript
@@ -2617,16 +2630,15 @@ class UnsignedTransaction(AsciiSerializable):
 #
 # This method is intended for sweep transaction where a bundle of private keys
 # were provided.
-def PyCreateAndSignTx(ustxiList, dtxoList, sbdPrivKeyMap):
+def PyCreateAndSignTx(ustxiList, dtxoList, sbdPrivKeyMap, hashcode=1):
    ustx = UnsignedTransaction().createFromUnsignedTxIO(ustxiList, dtxoList)
 
-   for ustxi in ustx.ustxInputs:
-      for iin in range(len(ustxi.scrAddrs)):
-         scrAddr = ustxi.scrAddrs[iin]
+   for ustxiIndex in range(len(ustx.ustxInputs)):
+      for scrAddr in ustx.ustxInputs[ustxiIndex].scrAddrs:
          sbdPriv = sbdPrivKeyMap.get(scrAddr)
          if sbdPriv is None:
             raise SignatureError('Supplied key map cannot sign all inputs')
-         ustx.createAndInsertSignatureForInput(iin, sbdPriv)
+         ustx.createAndInsertSignatureForInput(ustxiIndex, sbdPriv, hashcode)
 
    # Make sure everythign was good
    if not ustx.verifySigsAllInputs():
