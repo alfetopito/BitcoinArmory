@@ -1,5 +1,13 @@
+################################################################################
+#                                                                              #
+# Copyright (C) 2011-2015, Armory Technologies, Inc.                           #
+# Distributed under the GNU Affero General Public License (AGPL v3)            #
+# See LICENSE or http://www.gnu.org/licenses/agpl.html                         #
+#                                                                              #
+################################################################################
 from armoryengine.ArmoryUtils import *
 from armoryengine.Transaction import *
+from armoryengine.Script import *
 
 MULTISIG_VERSION = 1
 
@@ -57,6 +65,17 @@ PROMIDSIZE = 4
 LBPREFIX, LBSUFFIX = 'Lockbox[Bare:', ']'
 LBP2SHPREFIX = 'Lockbox['
 
+#############################################################################
+def getRecipStr(decoratedTxOut):
+   if decoratedTxOut.scriptType in CPP_TXOUT_HAS_ADDRSTR:
+      return script_to_addrStr(decoratedTxOut.binScript)
+   elif decoratedTxOut.scriptType == CPP_TXOUT_MULTISIG:
+      lbID = calcLockboxID(decoratedTxOut.binScript)
+      return 'Multisig %d-of-%d (%s)' % \
+         (decoratedTxOut.multiInfo['M'], decoratedTxOut.multiInfo['N'], lbID)
+   else:
+      return ''
+   
 ################################################################################
 def calcLockboxID(script=None, scraddr=None):
    # ScrAddr is "Script/Address" and for multisig it is 0xfe followed by
@@ -243,10 +262,18 @@ class MultiSigLockbox(AsciiSerializable):
       self.magicBytes  = MAGIC_BYTES
       self.uniqueIDB58 = None
       self.asciiID     = None
+      
+      #UI member for rescans
+      self.isEnabled   = True
 
       if (M is not None) and (N is not None) and (dPubKeys is not None):
          self.setParams(name, descr, M, N, dPubKeys, createDate, version)
 
+   #############################################################################
+   def registerLockbox(self, addressList, isNew=False):
+      return TheBDM.registerLockbox(self.uniqueIDB58, addressList, isNew)
+      
+      
    #############################################################################
    def setParams(self, name, descr, M, N, dPubKeys, createDate=None, 
                                                    version=MULTISIG_VERSION):

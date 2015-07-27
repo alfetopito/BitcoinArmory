@@ -1,6 +1,6 @@
 ################################################################################
 #                                                                              #
-# Copyright (C) 2011-2014, Armory Technologies, Inc.                           #
+# Copyright (C) 2011-2015, Armory Technologies, Inc.                           #
 # Distributed under the GNU Affero General Public License (AGPL v3)            #
 # See LICENSE or http://www.gnu.org/licenses/agpl.html                         #
 #                                                                              #
@@ -14,6 +14,7 @@ from armoryengine.BinaryPacker import *
 from armoryengine.BinaryUnpacker import *
 
 from armoryengine.AsciiSerialize import AsciiSerializable
+
 
 UNSIGNED_TX_VERSION = 1
 
@@ -898,9 +899,9 @@ def generatePreHashTxMsgToSign(pytx, txInIndex, prevTxOutScript, hashcode=1):
 
    Right now only supports SIGHASH_ALL
    """
-   
-   if not hashcode in [1, SIGHASH_NONE|SIGHASH_ANYONECANPAY]:
-      LOGERROR('Only hashcode=1 and 82 are supported at this time!')
+   if not hashcode == 1:
+      # NO OTHER HASHCODES HAVE BEEN TESTED
+      LOGERROR('Only hashcode=1 is supported at this time!')
       LOGERROR('Requested hashcode=%d' % hashcode)
       return None
 
@@ -912,9 +913,14 @@ def generatePreHashTxMsgToSign(pytx, txInIndex, prevTxOutScript, hashcode=1):
    # Set the script of the TxIn being signed, to the previous TxOut script
    txCopy.inputs[txInIndex].binScript = prevTxOutScript
    
-   # for SIGHASH_NONE|SIGHASH_ANYONECANPAY remove everything except the current input
-   if hashcode == SIGHASH_NONE|SIGHASH_ANYONECANPAY:
+   # Remove outputs given SIGHASH type (DISABLED DUE TO FIRST CONDITIONAL ABOVE)
+   if hashcode & 0x7fffffff == SIGHASH_NONE:
       txCopy.outputs = []
+   elif hashcode & 0x7fffffff == SIGHASH_SINGLE:
+      txCopy.outputs = [txCopy.outputs[txInIndex]]
+
+   # Remove all other inputs if needed (DISABLED DUE TO FIRST CONDITIONAL ABOVE)
+   if hashcode & SIGHASH_ANYONECANPAY:
       txCopy.inputs = [txCopy.inputs[txInIndex]]
 
    hashCode1  = int_to_binary(hashcode, widthBytes=1)
@@ -1127,7 +1133,6 @@ class UnsignedTxInput(AsciiSerializable):
 
    #############################################################################
    def setSignature(self, msIndex, sigStr):
-      LOGDEBUG('Setting signature in key index: %d' % msIndex)
       self.signatures[msIndex] = sigStr
 
 
@@ -1212,7 +1217,8 @@ class UnsignedTxInput(AsciiSerializable):
 
 
    #############################################################################
-   def createTxSignature(self, pytx, sbdPrivKey, hashcode=1):
+   def createTxSignature(self, pytx, sbdPrivKey, hashcode=1,
+                         DetSign=ENABLE_DETSIGN):
       """
       This might be a little confusing ... remember this is an input for a
       transaction which may not have been fully defined at the time this
@@ -1223,7 +1229,6 @@ class UnsignedTxInput(AsciiSerializable):
       This returns a DER-encoded signature string with the 1-byte hashcode
       appended to the end
       """
-
       # Make sure the supplied privateKey is relevant to this USTXI
       computedPub = CryptoECDSA().ComputePublicKey(sbdPrivKey).toBinStr()
       if not computedPub in self.pubKeys:
@@ -1239,7 +1244,7 @@ class UnsignedTxInput(AsciiSerializable):
 
       msg,hc = generatePreHashTxMsgToSign(pytx, txiIdx, 
                                     self.getTxoScriptToSign(), hashcode)
-      sbdSig = CryptoECDSA().SignData(SecureBinaryData(msg), sbdPrivKey)
+      sbdSig = CryptoECDSA().SignData(SecureBinaryData(msg), sbdPrivKey, DetSign)
       binSig = sbdSig.toBinStr()
       return createDERSigFromRS(binSig[:32], binSig[32:]) + hc
 
@@ -1266,9 +1271,8 @@ class UnsignedTxInput(AsciiSerializable):
 
 
    #############################################################################
-   def createAndInsertSignature(self, pytx, sbdPrivKey, hashcode=1):
-
-      derSig = self.createTxSignature(pytx, sbdPrivKey, hashcode)
+   def createAndInsertSignature(self, pytx, sbdPrivKey, hashcode=1, DetSign=ENABLE_DETSIGN):
+      derSig = self.createTxSignature(pytx, sbdPrivKey, hashcode, DetSign)
       computedPub = CryptoECDSA().ComputePublicKey(sbdPrivKey).toBinStr()
 
       msIdx = self.insertSignature(derSig, computedPub)
@@ -1317,6 +1321,9 @@ class UnsignedTxInput(AsciiSerializable):
 
       rBin, sBin = getRSFromDERSig(sigStr)
       hashcode  = binary_to_int(sigStr[-1])
+      if not hashcode==1:
+         LOGERROR('Cannot allow non-standard SIGHASH types: %d' % hashcode)
+         return -1
 
       # Don't forget "sigStr" has the 1-byte hashcode at the end
       msg = generatePreHashTxMsgToSign(pytx, txiIdx,
@@ -1710,17 +1717,6 @@ class DecoratedTxOut(AsciiSerializable):
       self.wltLocator = wltLocStr
 
    #############################################################################
-   def getRecipStr(self):
-      if self.scriptType in CPP_TXOUT_HAS_ADDRSTR:
-         return script_to_addrStr(self.binScript)
-      elif self.scriptType == CPP_TXOUT_MULTISIG:
-         lbID = calcLockboxID(self.binScript)
-         return 'Multisig %d-of-%d (%s)' % \
-            (self.multiInfo['M'], self.multiInfo['N'], lbID)
-      else:
-         return ''
-
-   #############################################################################
    def toJSONMap(self):
       """
       No lite version needed, since these are usually very small.
@@ -2057,7 +2053,7 @@ class UnsignedTransaction(AsciiSerializable):
       p2shMap = {} if not p2shMap   else p2shMap
 
 
-      if len(txMap)==0 and not TheBDM.getBDMState()=='BlockchainReady':
+      if len(txMap)==0 and not TheBDM.getState()==BDM_BLOCKCHAIN_READY:
          # TxDP includes the transactions that supply the inputs to this
          # transaction, so the BDM needs to be available to fetch those.
          raise BlockchainUnavailableError, ('Must input supporting transactions '
@@ -2084,8 +2080,8 @@ class UnsignedTransaction(AsciiSerializable):
                raise InvalidHashError, ('Could not find the referenced tx '
                                         'in supplied txMap')
             pyPrevTx = txMap[txhash].copy()
-         elif TheBDM.getBDMState()=='BlockchainReady':
-            cppPrevTx = TheBDM.getTxByHash(txhash)
+         elif TheBDM.getState()==BDM_BLOCKCHAIN_READY:
+            cppPrevTx = TheBDM.bdv().getTxByHash(txhash)
             if not cppPrevTx:
                raise InvalidHashError, 'Could not find the referenced tx'
             pyPrevTx = PyTx().unserialize(cppPrevTx.serialize())
@@ -2482,12 +2478,13 @@ class UnsignedTransaction(AsciiSerializable):
 
 
    #############################################################################
-   def createAndInsertSignatureForInput(self, txInIndex, sbdPrivKey, hashcode=1):
+   def createAndInsertSignatureForInput(self, txInIndex, sbdPrivKey, hashcode=1,
+                                        DetSign=ENABLE_DETSIGN):
       if txInIndex >= len(self.ustxInputs):
          raise SignatureError('TxIn index is out of range for this USTX')
 
       ustxi = self.ustxInputs[txInIndex]
-      ustxi.createAndInsertSignature(self.pytxObj, sbdPrivKey, hashcode)
+      ustxi.createAndInsertSignature(self.pytxObj, sbdPrivKey, hashcode, DetSign)
 
 
    #############################################################################
@@ -2630,7 +2627,7 @@ class UnsignedTransaction(AsciiSerializable):
 #
 # This method is intended for sweep transaction where a bundle of private keys
 # were provided.
-def PyCreateAndSignTx(ustxiList, dtxoList, sbdPrivKeyMap, hashcode=1):
+def PyCreateAndSignTx(ustxiList, dtxoList, sbdPrivKeyMap, hashcode=1, DetSign=True):
    ustx = UnsignedTransaction().createFromUnsignedTxIO(ustxiList, dtxoList)
 
    for ustxiIndex in range(len(ustx.ustxInputs)):
@@ -2638,9 +2635,10 @@ def PyCreateAndSignTx(ustxiList, dtxoList, sbdPrivKeyMap, hashcode=1):
          sbdPriv = sbdPrivKeyMap.get(scrAddr)
          if sbdPriv is None:
             raise SignatureError('Supplied key map cannot sign all inputs')
-         ustx.createAndInsertSignatureForInput(ustxiIndex, sbdPriv, hashcode)
+         ustx.createAndInsertSignatureForInput(ustxiIndex, sbdPriv, hashcode,
+                                               DetSign)
 
-   # Make sure everythign was good
+   # Make sure everything was good.
    if not ustx.verifySigsAllInputs():
       raise SignatureError('Not all signatures are present or valid')
 
@@ -2666,18 +2664,23 @@ def PyCreateAndSignTx(ustxiList, dtxoList, sbdPrivKeyMap, hashcode=1):
 # This method will take an already-selected set of TxOuts, along with
 # PyBtcAddress objects containing necessary the private keys
 #
-#    Src TxOut ~ {PyBtcAddr, PrevTx, PrevTxOutIdx}  --OR--  COINBASE = -1
-#    Dst TxOut ~ {PyBtcAddr, value}
+#    Src TxIn  ~ {PyBtcAddr, PrevTx, PrevTxOutIdx} -OR-
+#                {MultiSigLockbox, PrevTx, PrevTxOutIdx, [PyBtcAddress], isP2SH}
+#                -OR- COINBASE = -1 (dst must not be multisig)
+#                If src is multisig, PyBtcAddress list is the signing prv keys
+#    Dst TxOut ~ {PyBtcAddr, value} -OR- {MultiSigLockbox, value, isP2SH}
 #
 # Of course, we usually don't have the private keys of the dst addrs...
 #
 def PyCreateAndSignTx_old(srcTxOuts, dstAddrsVals):
+   # This needs to support multisig. Perhaps the funct should just be moved....
+   from armoryengine.MultiSigUtils import *
+
    newTx = PyTx()
    newTx.version    = 1
    newTx.lockTime   = 0
    newTx.inputs     = []
    newTx.outputs    = []
-
 
    numInputs  = len(srcTxOuts)
    numOutputs = len(dstAddrsVals)
@@ -2686,20 +2689,25 @@ def PyCreateAndSignTx_old(srcTxOuts, dstAddrsVals):
    if numInputs==1 and srcTxOuts[0] == -1:
       coinbaseTx = True
 
-
    #############################
    # Fill in TxOuts first
    for i in range(numOutputs):
       txout       = PyTxOut()
       txout.value = dstAddrsVals[i][1]
-      dst         = dstAddrsVals[i][0]
-      if(coinbaseTx):
-         txout.binScript = pubkey_to_p2pk_script(dst.binPublicKey65.toBinStr())
+      dst = dstAddrsVals[i][0]
+      if type(dst) is not MultiSigLockbox:
+         if(coinbaseTx):
+            txout.binScript = pubkey_to_p2pk_script(dst.binPublicKey65.toBinStr())
+         else:
+            txout.binScript = hash160_to_p2pkhash_script(dst.getAddr160())
       else:
-         txout.binScript = hash160_to_p2pkhash_script(dst.getAddr160())
+         dstMultiP2SH = dstAddrsVals[i][2]
+         if not dstMultiP2SH:
+            txout.binScript = dst.binScript
+         else:
+            txout.binScript = script_to_p2sh_script(dst.binScript)
 
       newTx.outputs.append(txout)
-
 
    #############################
    # Create temp TxIns with blank scripts
@@ -2716,7 +2724,6 @@ def PyCreateAndSignTx_old(srcTxOuts, dstAddrsVals):
       txin.intSeq = 2**32-1
       newTx.inputs.append(txin)
 
-
    #############################
    # Now we apply the ultra-complicated signature procedure
    # We need a copy of the Tx with all the txin scripts blanked out
@@ -2725,63 +2732,75 @@ def PyCreateAndSignTx_old(srcTxOuts, dstAddrsVals):
       if coinbaseTx:
          pass
       else:
-         txCopy     = PyTx().unserialize(txCopySerialized)
-         srcAddr    = srcTxOuts[i][0]
-         txoutIdx   = srcTxOuts[i][2]
-         prevTxOut  = srcTxOuts[i][1].outputs[txoutIdx]
-         binToSign  = ''
-
-         assert(srcAddr.hasPrivKey())
-
          # Only implemented one type of hashing:  SIGHASH_ALL
          hashType   = 1  # SIGHASH_ALL
          hashCode1  = int_to_binary(1, widthBytes=1)
          hashCode4  = int_to_binary(1, widthBytes=4)
 
+         txCopy     = PyTx().unserialize(txCopySerialized)
+         txoutIdx   = srcTxOuts[i][2]
+         prevTxOut  = srcTxOuts[i][1].outputs[txoutIdx]
+         binToSign  = ''
+         src        = srcTxOuts[i][0]
+
          # Copy the script of the TxOut we're spending, into the txIn script
          txCopy.inputs[i].binScript = prevTxOut.binScript
          preHashMsg = txCopy.serialize() + hashCode4
 
-         # CppBlockUtils::CryptoECDSA modules do the hashing for us
-         ##binToSign = hash256(preHashMsg)
-         ##binToSign = binary_switchEndian(binToSign)
+         if type(src) is not MultiSigLockbox:
+            assert(src.hasPrivKey())
 
-         signature = srcAddr.generateDERSignature(preHashMsg)
+            # Create the sig, and use deterministic signing.
+            signature = src.generateDERSignature(preHashMsg, DetSign=ENABLE_DETSIGN)
 
+            # If we are spending a Coinbase-TxOut, only need sig, no pubkey
+            # Don't forget to tack on the one-byte hashcode and consider it part of sig
+            if len(prevTxOut.binScript) > 30:
+               sigLenInBinary = int_to_binary(len(signature) + 1)
+               newTx.inputs[i].binScript = sigLenInBinary + signature + hashCode1
+            else:
+               pubkey = src.binPublicKey65.toBinStr()
+               sigLenInBinary    = int_to_binary(len(signature) + 1)
+               pubkeyLenInBinary = int_to_binary(len(pubkey)   )
+               newTx.inputs[i].binScript = sigLenInBinary + signature + hashCode1 + \
+                                           pubkeyLenInBinary + pubkey
 
-         # If we are spending a Coinbase-TxOut, only need sig, no pubkey
-         # Don't forget to tack on the one-byte hashcode and consider it part of sig
-         if len(prevTxOut.binScript) > 30:
-            sigLenInBinary = int_to_binary(len(signature) + 1)
-            newTx.inputs[i].binScript = sigLenInBinary + signature + hashCode1
          else:
-            pubkey = srcAddr.binPublicKey65.toBinStr()
-            sigLenInBinary    = int_to_binary(len(signature) + 1)
-            pubkeyLenInBinary = int_to_binary(len(pubkey)   )
-            newTx.inputs[i].binScript = sigLenInBinary + signature + hashCode1 + \
-                                        pubkeyLenInBinary + pubkey
+            newTx.inputs[i].binScript = int_to_binary(OP_0)
+
+            for nxtAddr in srcTxOuts[i][3]:
+               assert(nxtAddr.hasPrivKey())
+               signature = nxtAddr.generateDERSignature(preHashMsg, DetSign=ENABLE_DETSIGN)
+               sigLenInBinary    = int_to_binary(len(signature) + 1)
+               newTx.inputs[i].binScript += sigLenInBinary + signature + hashCode1
+
+            srcMultiP2SH = srcTxOuts[i][4]
+            if srcMultiP2SH:
+               newTx.inputs[i].binScript += src.binScript
 
    #############################
    # Finally, our tx is complete!
    return newTx
 
 
-
 #############################################################################
 def getFeeForTx(txHash):
-   if TheBDM.getBDMState()=='BlockchainReady':
-      if not TheBDM.hasTxWithHash(txHash):
-         LOGERROR('Attempted to get fee for tx we don\'t have...?  %s', \
-                                             binary_to_hex(txHash,BIGENDIAN))
+   if TheBDM.getState()==BDM_BLOCKCHAIN_READY:
+      try:
+         txref = TheBDM.getTxByHash(txHash)
+         if not txref.isInitialized():
+            LOGERROR('Attempted to get fee for tx we don\'t have...?  %s', \
+                                                binary_to_hex(txHash,BIGENDIAN))
+            return 0
+         valIn, valOut = 0,0
+         for i in range(txref.getNumTxIn()):
+            valIn += TheBDM.bdv().getSentValue(txref.getTxInCopy(i))
+         for i in range(txref.getNumTxOut()):
+            valOut += txref.getTxOutCopy(i).getValue()
+         return valIn - valOut
+      except:
+         LOGERROR('Couldn\'t get tx fee. Ignore this message in Fullnode') 
          return 0
-      txref = TheBDM.getTxByHash(txHash)
-      valIn, valOut = 0,0
-      for i in range(txref.getNumTxIn()):
-         valIn += TheBDM.getSentValue(txref.getTxInCopy(i))
-      for i in range(txref.getNumTxOut()):
-         valOut += txref.getTxOutCopy(i).getValue()
-      return valIn - valOut
-
 
 #############################################################################
 def determineSentToSelfAmt(le, wlt):
@@ -2792,8 +2811,8 @@ def determineSentToSelfAmt(le, wlt):
           creative with this tx, this may not actually work.
    """
    amt = 0
-   if TheBDM.isInitialized() and le.isSentToSelf():
-      txref = TheBDM.getTxByHash(le.getTxHash())
+   if le.isSentToSelf():
+      txref = TheBDM.bdv().getTxByHash(le.getTxHash())
       if not txref.isInitialized():
          return (0, 0)
       if txref.getNumTxOut()==1:
@@ -2817,70 +2836,56 @@ def determineSentToSelfAmt(le, wlt):
 
 ################################################################################
 #def getUnspentTxOutsForAddrList(addr160List, utxoType='Sweep', startBlk=-1, \
-def getUnspentTxOutsForAddr160List(addr160List, utxoType='Sweep', startBlk=-1, \
-                                 abortIfBDMBusy=False):
-   """
-
+def getUnspentTxOutsForAddr160List(addr160List):
+   '''
    You have a list of addresses (or just one) and you want to get all the
    unspent TxOuts for it.  This can either be for computing its balance, or
    for sweeping the address(es).
 
-   This will return a list of pairs of [addr160, utxoObj]
+   This will return a list of pairs of UTXOs
    This isn't the most efficient method for producing the pairs
 
    NOTE:  At the moment, this only gets STANDARD TxOuts... non-std uses
           a different BDM call
 
-   This method will return null output if the BDM is currently in the
+   This method will return empty list if the BDM is currently in the
    middle of a scan.  You can use waitAsLongAsNecessary=True if you
    want to wait for the previous scan AND the next scan.  Otherwise,
    you can check for bal==-1 and then try again later...
-
-   Multi-threading update:
-
-      This one-stop-shop method has to be blocking.  Instead, you might want
-      to register the address and rescan asynchronously, skipping this method
-      entirely:
-
-         cppWlt = Cpp.BtcWallet()
-         cppWlt.addScrAddress_1_(Hash160ToScrAddr(self.getAddr160()))
-         TheBDM.registerScrAddr(Hash160ToScrAddr(self.getAddr160()))
-         TheBDM.rescanBlockchain(wait=False)
-
-         <... do some other stuff ...>
-
-         if TheBDM.getBDMState()=='BlockchainReady':
-            TheBDM.updateWalletsAfterScan(wait=True) # fast after a rescan
-            bal      = cppWlt.getBalance('Spendable')
-            utxoList = cppWlt.getUnspentTxOutList()
-         else:
-            <...come back later...>
-   """
-   if TheBDM.getBDMState()=='BlockchainReady' or \
-         (TheBDM.isScanning() and not abortIfBDMBusy):
+   
+   //note for the new backend:
+      This call has no scalability whatsoever. Unless you want UTXOs for a small
+      list of arbitrary addresses with limited history, do not resort to this call!
+      
+      Instead, register a wallet and pull the UTXOs from there.
+      
+      Also, no ZC
+   '''
+   
+   if TheBDM.getState()==BDM_BLOCKCHAIN_READY:
       if not isinstance(addr160List, (list,tuple)):
          addr160List = [addr160List]
 
-      cppWlt = Cpp.BtcWallet()
+      scrAddrList = []
+
       for addr in addr160List:
          if isinstance(addr, PyBtcAddress):
-            cppWlt.addScrAddress_1_(Hash160ToScrAddr(addr.getAddr160()))
+            scrAddrList.append(Hash160ToScrAddr(addr.getAddr160()))
          else:
-            cppWlt.addScrAddress_1_(Hash160ToScrAddr(addr))
-
-      TheBDM.registerWallet(cppWlt)
-      currBlk = TheBDM.getTopBlockHeight()
-      TheBDM.scanBlockchainForTx(cppWlt, currBlk+1 if startBlk==-1 else startBlk)
-      #TheBDM.scanRegisteredTxForWallet(cppWlt, currBlk+1 if startBlk==-1 else startBlk)
-
-      if utxoType.lower() in ('sweep','unspent','full','all','ultimate'):
-         return cppWlt.getFullTxOutList(currBlk)
-      elif utxoType.lower() in ('spend','spendable','confirmed'):
-         return cppWlt.getSpendableTxOutList(currBlk, IGNOREZC)
-      else:
-         raise TypeError, 'Unknown utxoType!'
+            # Have to Skip ROOT
+            if addr!='ROOT':
+               scrAddrList.append(Hash160ToScrAddr(addr))
+      
+      try:
+         utxoList = TheBDM.bdv().getUnspentTxoutsForAddr160List(scrAddrList, IGNOREZC)
+      except:
+         raise AddressUnregisteredError
+      
+      return utxoList
+   
    else:
       return []
+
 
 def pprintLedgerEntry(le, indent=''):
    if len(le.getScrAddr())==21:
@@ -2901,8 +2906,7 @@ def pprintLedgerEntry(le, indent=''):
             (addrStr.ljust(15), leVal, txType.ljust(8), blkStr.ljust(8))
 
 # Putting this at the end because of the circular dependency
-from armoryengine.BDM import TheBDM
+from armoryengine.BDM import TheBDM, BDM_BLOCKCHAIN_READY
 from armoryengine.PyBtcAddress import PyBtcAddress
 from armoryengine.CoinSelection import pprintUnspentTxOutList, sumTxOutList
 from armoryengine.Script import *
-from armoryengine.MultiSigUtils import calcLockboxID

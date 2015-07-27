@@ -7,9 +7,9 @@
 # Set environment variables so the Python executable finds its stuff.
 # Note that `dirname $0` gives a relative path. We'd like the absolute path.
 DIRNAME="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-ARMORYDIR="$DIRNAME/py/usr/lib/armory"
-LIBDIR="$DIRNAME/../Dependencies"
-FRDIR="$DIRNAME/../Frameworks"
+ARMORYDIR="${DIRNAME}/py/usr/lib/armory"
+LIBDIR="${DIRNAME}/../Dependencies"
+FRDIR="${DIRNAME}/../Frameworks"
 
 export PYTHONPATH="$ARMORYDIR"
 export DYLD_LIBRARY_PATH="${LIBDIR}:${FRDIR}"
@@ -25,7 +25,8 @@ export DYLD_FRAMEWORK_PATH="${LIBDIR}:${FRDIR}"
 # symlink from the execution directory, the app name from Info.plist is used.
 # Also, the link should be here so that the link works wherever this is
 # executed, and not just on the build machine.
-ln -sf "$FRDIR/Python.framework/Versions/2.7/Resources/Python.app/Contents/MacOS/Python" "$DIRNAME/Python"
+ln -sf "${FRDIR}/Python.framework/Versions/2.7/Resources/Python.app/Contents/MacOS/Python" "${DIRNAME}/Python"
 
-# Call ArmoryQt and get this party started!
-"$DIRNAME/Python" "$ARMORYDIR/ArmoryQt.py" "$@"
+# Assume all args are meant for Armory. Assuming otherwise, for shell scripts
+# at least, it horribly painful.
+exec "${DIRNAME}/Python" "${ARMORYDIR}/ArmoryQt.py" "$@"

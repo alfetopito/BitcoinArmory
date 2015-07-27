@@ -1,6 +1,6 @@
 ################################################################################
 #                                                                              #
-# Copyright (C) 2011-2014, Armory Technologies, Inc.                           #
+# Copyright (C) 2011-2015, Armory Technologies, Inc.                           #
 # Distributed under the GNU Affero General Public License (AGPL v3)            #
 # See LICENSE or http://www.gnu.org/licenses/agpl.html                         #
 #                                                                              #
@@ -79,7 +79,6 @@ def pprintScript(binScript, nIndent=0):
    for op in opList:
       print indstr + indent + op
 
-
 def scriptPushData(binObj):
    sz = len(binObj) 
    if sz <= 76:
@@ -93,8 +92,6 @@ def scriptPushData(binObj):
       return '\x4d' + lenBytes + binObj
    else:
       InvalidScriptError('Cannot use PUSHDATA for len(obj)>65536')
-
-
 
 class ScriptBuilder(object):
    def __init__(self):

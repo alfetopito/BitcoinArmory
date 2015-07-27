@@ -1,6 +1,6 @@
 ################################################################################
 #                                                                              #
-# Copyright (C) 2011-2014, Armory Technologies, Inc.                           #
+# Copyright (C) 2011-2015, Armory Technologies, Inc.                           #
 # Distributed under the GNU Affero General Public License (AGPL v3)            #
 # See LICENSE or http://www.gnu.org/licenses/agpl.html                         #
 #                                                                              #
@@ -9,7 +9,7 @@
 from PyQt4.Qt import * #@UnusedWildImport
 from PyQt4.QtGui import * #@UnusedWildImport
 
-from armoryengine.BDM import TheBDM
+from armoryengine.BDM import TheBDM, BDM_BLOCKCHAIN_READY
 from qtdefines import * #@UnusedWildImport
 
 WALLET_DATA_ENTRY_FIELD_WIDTH = 60
@@ -61,8 +61,7 @@ class LockboxSelectFrame(ArmoryFrame):
       self.dispDescr = QRichLabel(dispDescr)
       self.dispDescr.setWordWrap(True)
       self.dispDescr.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-
-      bal = self.cppWlt.getSpendableBalance(self.main.currBlockNum, IGNOREZC)
+      bal = self.cppWlt.getSpendableBalance(TheBDM.getTopBlockHeight(), IGNOREZC)
       self.dispBal = QMoneyLabel(bal, wBold=True)
       self.dispBal.setTextFormat(Qt.RichText)
 
@@ -271,7 +270,7 @@ class SelectWalletFrame(ArmoryFrame):
          self.dispDescr.setText(wlt.labelDescr)
          self.selectedID = wltID
          
-         if not TheBDM.getBDMState() == 'BlockchainReady':
+         if not TheBDM.getState() == BDM_BLOCKCHAIN_READY:
             self.dispBal.setText('-' * 12)
          else:
             bal = wlt.getBalance('Spendable')
@@ -315,7 +314,7 @@ class SelectWalletFrame(ArmoryFrame):
          self.dispBal.setText(rawValTxt + ' <font color="%s">(of %s)</font>' % \
                                     (htmlColor('DisableFG'), coin2str(fullBal, maxZeros=0)))
 
-      if not TheBDM.getBDMState() == 'BlockchainReady':
+      if not TheBDM.getState() == BDM_BLOCKCHAIN_READY:
          self.dispBal.setText('(available when online)', color='DisableFG')
       self.repaint()
       if self.coinControlCallback:

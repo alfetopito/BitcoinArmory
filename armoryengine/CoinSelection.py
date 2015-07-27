@@ -1,6 +1,6 @@
 ################################################################################
 #                                                                              #
-# Copyright (C) 2011-2014, Armory Technologies, Inc.                           #
+# Copyright (C) 2011-2015, Armory Technologies, Inc.                           #
 # Distributed under the GNU Affero General Public License (AGPL v3)            #
 # See LICENSE or http://www.gnu.org/licenses/agpl.html                         #
 #                                                                              #
@@ -64,6 +64,9 @@ from armoryengine.ArmoryUtils import CheckHash160, binary_to_hex, coin2str, \
    hash160_to_addrStr, ONE_BTC, CENT, int_to_binary, MIN_RELAY_TX_FEE, MIN_TX_FEE
 from armoryengine.Timer import TimeThisFunction
 from armoryengine.Transaction import *
+import BDM
+from bitcoinrpc_jsonrpc.authproxy import JSONRPCException
+
 
 
 ################################################################################
@@ -225,6 +228,8 @@ def PySortCoins(unspentTxOutInfo, sortMethod=1):
       return finalSortedList
    if sortMethod in (5, 6, 7):
       utxoSorted = PySortCoins(unspentTxOutInfo, 1)
+      if len(utxoSorted) == 0:
+         return utxoSorted
       # Rotate the top 1,2 or 3 elements to the bottom of the list
       for i in range(sortMethod-4):
          utxoSorted.append(utxoSorted[0])
@@ -713,6 +718,46 @@ def PySelectCoins(unspentTxOutInfo, targetOutVal, minFee=0, numRand=10, margin=C
             break
    return finalSelection
 
+NBLOCKS_TO_CONFIRM = 3
+# ONE_BTC * 144 / 250
+DEFAULT_PRIORITY = 57600000
+
+################################################################################
+# Call bitcoin core to get the fee estimate per KB
+def estimateFee():
+   result = MIN_TX_FEE
+   try:
+      # See https://bitcoin.org/en/developer-reference#estimatefee for
+      # documentation about this RPC call
+      fee = BDM.TheSDM.callJSON('estimatefee', NBLOCKS_TO_CONFIRM)
+      # -1 is returned if BitcoinD does not have enough data to estimate fee.
+      if fee > 0:
+         result = int(fee * ONE_BTC)
+   except:
+      # if the BitcoinD version does not support fee estimation return default
+      # if the BitcoinD was never started return default
+      pass
+   return result
+   
+################################################################################
+# Call bitcoin core to get the priority estimate
+def estimatePriority():
+   result = DEFAULT_PRIORITY
+   try:
+      # See https://bitcoin.org/en/developer-reference#estimatepriority for
+      # documentation about this RPC call
+      priority = BDM.TheSDM.callJSON('estimatepriority', NBLOCKS_TO_CONFIRM)
+      # -1 is returned if BitcoinD does not have enough data to estimate
+      # the priority
+      if priority == -1:
+         result = priority
+   except:
+      # if the BitcoinD version does not support priority estimation
+      # return default
+      # if the BitcoinD was never started return default
+      pass
+   return int(result)
+
 ################################################################################
 def calcMinSuggestedFeesHackMS(selectCoinsResult, targetOutVal, preSelectedFee, 
                                                          numRecipients):
@@ -723,8 +768,6 @@ def calcMinSuggestedFeesHackMS(selectCoinsResult, targetOutVal, preSelectedFee,
 
    we just copy the original method with an update to the computation
    """
-   paid = targetOutVal + preSelectedFee
-   change = sum([u.getValue() for u in selectCoinsResult]) - paid
 
    numBytes = 0
    msInfo = [getMultisigScriptInfo(utxo.getScript()) for utxo in selectCoinsResult]
@@ -733,34 +776,20 @@ def calcMinSuggestedFeesHackMS(selectCoinsResult, targetOutVal, preSelectedFee,
 
    numBytes += 200*numRecipients  # assume large lockbox outputs
    numKb = int(numBytes / 1000)
-
+   suggestedFee = (1+numKb)*estimateFee()
    if numKb>10:
-      return [(1+numKb)*MIN_RELAY_TX_FEE, (1+numKb)*MIN_TX_FEE]
-
+      return suggestedFee
+   
    # Compute raw priority of tx
    prioritySum = 0
    for utxo in selectCoinsResult:
       prioritySum += utxo.getValue() * utxo.getNumConfirm()
    prioritySum = prioritySum / numBytes
 
-   # Any tiny/dust outputs?
-   haveDustOutputs = (0<change<CENT or targetOutVal<CENT)
+   if(prioritySum >= estimatePriority() and numBytes < 10000):
+      return 0
 
-   if((not haveDustOutputs) and \
-      prioritySum >= ONE_BTC * 144 / 250. and \
-      numBytes < 10000):
-      return [0,0]
-
-   # This cannot be a free transaction.
-   minFeeMultiplier = (1 + numKb)
-
-   # At the moment this condition never triggers
-   if minFeeMultiplier<1.0 and haveDustOutputs:
-      minFeeMultiplier = 1.0
-
-
-   return [minFeeMultiplier * MIN_RELAY_TX_FEE, \
-           minFeeMultiplier * MIN_TX_FEE]
+   return suggestedFee
    
       
 
@@ -786,8 +815,8 @@ def calcMinSuggestedFees(selectCoinsResult, targetOutVal, preSelectedFee,
    #       TxOut/TxIn size given that it now accepts P2SH and Multisig
 
    if len(selectCoinsResult)==0:
-      return [-1,-1]
-
+      return -1
+   
    paid = targetOutVal + preSelectedFee
    change = sum([u.getValue() for u in selectCoinsResult]) - paid
 
@@ -797,33 +826,19 @@ def calcMinSuggestedFees(selectCoinsResult, targetOutVal, preSelectedFee,
    numBytes +=  35 * (numRecipients + (1 if change>0 else 0))
    numKb = int(numBytes / 1000)
 
+   suggestedFee = (1+numKb)*estimateFee()
    if numKb>10:
-      return [(1+numKb)*MIN_RELAY_TX_FEE, (1+numKb)*MIN_TX_FEE]
-
+      return suggestedFee
    # Compute raw priority of tx
    prioritySum = 0
    for utxo in selectCoinsResult:
       prioritySum += utxo.getValue() * utxo.getNumConfirm()
    prioritySum = prioritySum / numBytes
 
-   # Any tiny/dust outputs?
-   haveDustOutputs = (0<change<CENT or targetOutVal<CENT)
+   if(prioritySum >= estimatePriority() and numBytes < 10000):
+      return 0
 
-   if((not haveDustOutputs) and \
-      prioritySum >= ONE_BTC * 144 / 250. and \
-      numBytes < 10000):
-      return [0,0]
-
-   # This cannot be a free transaction.
-   minFeeMultiplier = (1 + numKb)
-
-   # At the moment this condition never triggers
-   if minFeeMultiplier<1.0 and haveDustOutputs:
-      minFeeMultiplier = 1.0
-
-
-   return [minFeeMultiplier * MIN_RELAY_TX_FEE, \
-           minFeeMultiplier * MIN_TX_FEE]
+   return suggestedFee
 
 
 

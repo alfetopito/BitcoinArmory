@@ -1,26 +1,30 @@
 import sys
+from twisted.python import filepath
 # This Code chunk has to appear before ArmoryUtils is imported
 # If not, it will run the tests in Mainnet.
 # TODO: Fix the code base so that nothing is started during imports.
 sys.argv.append('--testnet')
 # Uncomment when debugging
-# sys.argv.append('--debug')
-sys.argv.append('--nologging')
+sys.argv.append('--debug')
+sys.argv.append('--supernode')
+# sys.argv.append('--nologging')
 
 import os
 import time
-import CppBlockUtils
 import tempfile
 import shutil
 import subprocess
 import copy
 import unittest
 from zipfile import ZipFile
-from armoryengine.BDM import TheBDM, BlockDataManagerThread, newTheBDM
+from armoryengine.BDM import TheBDM, BlockDataManager, newTheBDM,\
+   BDM_BLOCKCHAIN_READY, STOPPED_ACTION
 
 TOP_TIAB_BLOCK = 247
 
 
+doneShuttingDownBDM = False
+      
 FIRST_WLT_FILE_NAME = "armory_GDHFnMQ2_.wallet"
 FIRST_WLT_NAME = "GDHFnMQ2"
 
@@ -106,13 +110,30 @@ class TiabSession:
          self.clean()
          raise
       self.running = True
+      
+   # Use this to get reset the wallet files
+   # previously run tests don't affect the state of the wallet file.
+   def resetWalletFiles(self):
+      with ZipFile(self.tiabZipPath, "r") as z:
+         z.extractall(self.tiabDirectory,  [fileName for fileName in z.namelist() if fileName.endswith('.wallet')])
 
 TIAB_ZIPFILE_NAME = 'tiab.zip'
 NEED_TIAB_MSG = "This Test must be run with <TBD>. Copy to the test directory. Actual Block Height is "
 
+
+
 class TiabTest(unittest.TestCase):      
+   
+   def __init__(self, methodName='runTest'):
+      unittest.TestCase.__init__(self, methodName)
+      self.maxDiff = None
+      
+   
    @classmethod
    def setUpClass(self):
+      global doneShuttingDownBDM
+      doneShuttingDownBDM = False
+      
       # Handle both calling the this test from the context of the test directory
       # and calling this test from the context of the main directory. 
       # The latter happens if you run all of the tests in the directory
@@ -123,28 +144,43 @@ class TiabTest(unittest.TestCase):
       else:
          self.fail(NEED_TIAB_MSG)
       self.tiab = TiabSession(tiabZipPath=tiabZipPath)
-      # Need to destroy whatever BDM may have been created automatically 
-      CppBlockUtils.BlockDataManager().DestroyBDM()
+      
       newTheBDM()
-      TheBDM.setDaemon(True)
-      TheBDM.start()
-      TheBDM.setSatoshiDir(os.path.join(self.tiab.tiabDirectory,'tiab','1','testnet3'))
       self.armoryHomeDir = os.path.join(self.tiab.tiabDirectory,'tiab','armory')
-      TheBDM.setLevelDBDir(os.path.join(self.tiab.tiabDirectory,'tiab','armory','databases'))
-      TheBDM.setBlocking(True)
-      TheBDM.setOnlineMode(wait=True)
+      TheBDM.setSatoshiDir(os.path.join(self.tiab.tiabDirectory,'tiab','1','testnet3'))
+      TheBDM.setArmoryDBDir(os.path.join(self.tiab.tiabDirectory,'tiab','armory','databases'))
+      TheBDM.goOnline(armoryDBDir=self.armoryHomeDir)
+      
       i = 0
-      while not TheBDM.getBDMState()=='BlockchainReady' and i < 10:
+      while not TheBDM.getState()==BDM_BLOCKCHAIN_READY:
          time.sleep(2)
          i += 1
-      if i >= 10:
-         raise RuntimeError("Timeout waiting for TheBDM to get into BlockchainReady state.")
-
+         if i >= 60:
+            raise RuntimeError("Timeout waiting for TheBDM to get into BlockchainReady state.")
 
    @classmethod
    def tearDownClass(self):
-      CppBlockUtils.BlockDataManager().DestroyBDM()
+      def tiabBDMShutdownCallback(action, arg):
+         global doneShuttingDownBDM
+         if action == STOPPED_ACTION:
+            doneShuttingDownBDM = True
+      
+      TheBDM.registerCppNotification(tiabBDMShutdownCallback)
+      TheBDM.beginCleanShutdown()
+      
+      i = 0
+      while not doneShuttingDownBDM:
+         time.sleep(0.5)
+         i += 1
+         if i >= 40:
+            raise RuntimeError("Timeout waiting for TheBDM to shutdown.")
+      
       self.tiab.clean()
+
+   # Use this to get reset the wallet files
+   # previously run tests don't affect the state of the wallet file.
+   def resetWalletFiles(self):
+      self.tiab.resetWalletFiles()
 
    def verifyBlockHeight(self):
       blockHeight = TheBDM.getTopBlockHeight()

@@ -1,6 +1,6 @@
 ################################################################################
 #
-# Copyright (C) 2011-2014, Armory Technologies, Inc.
+# Copyright (C) 2011-2015, Armory Technologies, Inc.
 # Distributed under the GNU Affero General Public License (AGPL v3)
 # See LICENSE or http://www.gnu.org/licenses/agpl.html
 #
@@ -70,6 +70,8 @@ def getScriptForUserString(userStr, wltMap, lboxList):
                hasAddrInIt = False
                break
       elif len(userStr) in [66,130]:
+         # Make hexidecimal numbers not case sensitive
+         userStr = userStr.lower()
          # This might be a public key. Confirm it's valid before proceeding.
          if isValidPK(userStr, True):
             sbdKey = SecureBinaryData(hex_to_binary(userStr))

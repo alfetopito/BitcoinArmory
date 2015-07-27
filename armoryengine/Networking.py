@@ -1,6 +1,6 @@
 ################################################################################
 #                                                                              #
-# Copyright (C) 2011-2014, Armory Technologies, Inc.                           #
+# Copyright (C) 2011-2015, Armory Technologies, Inc.                           #
 # Distributed under the GNU Affero General Public License (AGPL v3)            #
 # See LICENSE or http://www.gnu.org/licenses/agpl.html                         #
 #                                                                              #
@@ -25,12 +25,13 @@ import random
 from twisted.internet.defer import Deferred
 from twisted.internet.protocol import Protocol, ReconnectingClientFactory
 
-from armoryengine.ArmoryUtils import LOGINFO, RightNow, getVersionString, \
+from armoryengine.ArmoryUtils import LOGINFO, LOGWARN, RightNow, getVersionString, \
    BTCARMORY_VERSION, NetworkIDError, LOGERROR, BLOCKCHAINS, CLI_OPTIONS, LOGDEBUG, \
    binary_to_hex, BIGENDIAN, LOGRAWDATA, ARMORY_HOME_DIR, ConnectionError, \
    MAGIC_BYTES, hash256, verifyChecksum, NETWORKENDIAN, int_to_bitset, \
-   bitset_to_int, unixTimeToFormatStr
-from armoryengine.BDM import TheBDM
+   bitset_to_int, unixTimeToFormatStr, UnknownNetworkPayload
+from armoryengine.BDM import  BDM_OFFLINE, BDM_SCANNING,\
+   BDM_BLOCKCHAIN_READY
 from armoryengine.BinaryPacker import BinaryPacker, BINARY_CHUNK, UINT32, UINT64, \
    UINT16, VAR_INT, INT32, INT64, VAR_STR, INT8
 from armoryengine.BinaryUnpacker import BinaryUnpacker, UnpackerError
@@ -53,6 +54,7 @@ class ArmoryClient(Protocol):
       self.sentVerack = False
       self.sentHeadersReq = True
       self.peer = []
+      self.alerts = {}
 
    ############################################################
    def connectionMade(self):
@@ -114,6 +116,8 @@ class ArmoryClient(Protocol):
             # Before raising the error, we should've finished reading the msg
             # So pop it off the front of the buffer
             self.recvData = buf.getRemainingString()
+            return
+         except UnknownNetworkPayload:
             return
          except UnpackerError:
             # Expect this error when buffer isn't full enough for a whole msg
@@ -186,18 +190,17 @@ class ArmoryClient(Protocol):
          getdataMsg = PyMessage('getdata')
          for inv in invobj.invList:
             if inv[0]==MSG_INV_BLOCK:
-               if self.factory.bdm and (self.factory.bdm.getBDMState()=='Scanning' or \
-                  self.factory.bdm.hasHeaderWithHash(inv[1])):
+               if self.factory.bdm and (self.factory.bdm.getState()==BDM_SCANNING or \
+                     self.factory.bdm.bdv().blockchain().hasHeaderWithHash(inv[1])):
                   continue
                getdataMsg.payload.invList.append(inv)
             if inv[0]==MSG_INV_TX:
-               if self.factory.bdm and (self.factory.bdm.getBDMState()=='Scanning' or \
-                  self.factory.bdm.hasTxWithHash(inv[1])):
+               if not self.factory.bdm or self.factory.bdm.getState()!=BDM_BLOCKCHAIN_READY:
                   continue
                getdataMsg.payload.invList.append(inv)
 
          # Now send the full request
-         if self.factory.bdm and not self.factory.bdm.getBDMState()=='Scanning':
+         if self.factory.bdm and not self.factory.bdm.getState()==BDM_SCANNING:
             self.sendMessage(getdataMsg)
 
       if msg.cmd=='tx':
@@ -211,7 +214,12 @@ class ArmoryClient(Protocol):
          pyTxList = msg.payload.txList
          LOGINFO('Received new block.  %s', binary_to_hex(pyHeader.getHash(), BIGENDIAN))
          self.factory.func_newBlock(pyHeader, pyTxList)
-
+      elif msg.cmd=='alert':
+         # store the alert in our map
+         id = msg.payload.uniqueID
+         if not self.alerts.get(id):
+            self.alerts[id] = msg.payload
+         LOGWARN("received alert: %s" % msg.payload.statusBar)
                   
 
    ############################################################
@@ -220,7 +228,7 @@ class ArmoryClient(Protocol):
       msg = PyMessage('getheaders')
       msg.payload.version  = 1
       if self.factory.bdm:
-         msg.payload.hashList = [self.factory.bdm.getHeaderByHeight(i).getHash() for i in numList]
+         msg.payload.hashList = [self.factory.bdm.bdm.getHeaderByHeight(i).getHash() for i in numList]
       else:
          msg.payload.hashList = []
       msg.payload.hashStop = '\x00'*32
@@ -235,7 +243,7 @@ class ArmoryClient(Protocol):
       msg = PyMessage('getblocks')
       msg.payload.version  = 1
       if self.factory.bdm:
-         msg.payload.hashList = [self.factory.bdm.getHeaderByHeight(i).getHash() for i in numList]
+         msg.payload.hashList = [self.factory.bdm.bdm.getHeaderByHeight(i).getHash() for i in numList]
       else:
          msg.payload.hashList = []
       msg.payload.hashStop = '\x00'*32
@@ -282,18 +290,17 @@ class ArmoryClient(Protocol):
          self.sendMessage( PayloadTx(txObj))
       elif isinstance(txObj, str):
          self.sendMessage( PayloadTx(PyTx().unserialize(txObj)) )
-         
-
-
-
-
-   
-
 
 ################################################################################
 ################################################################################
 class ArmoryClientFactory(ReconnectingClientFactory):
    """
+   NOTE: If you add a method or change a method signature in this class
+   make sure you add it to FakeClientFactory. This might cause a very
+   hard to reproduce bug.
+   
+   TODO: Fix this technical debt
+   
    Spawns Protocol objects used for communicating over the socket.  All such
    objects (ArmoryClients) can share information through this factory.
    However, at the moment, this class is designed to only create a single 
@@ -319,7 +326,6 @@ class ArmoryClientFactory(ReconnectingClientFactory):
       self.bdm = bdm
       self.lastAlert = 0
       self.deferred_handshake   = forceDeferred(def_handshake)
-      self.fileMemPool = os.path.join(ARMORY_HOME_DIR, 'mempool.bin')
 
       # All other methods will be regular callbacks:  we plan to have a very
       # static set of behaviors for each message type
@@ -334,13 +340,9 @@ class ArmoryClientFactory(ReconnectingClientFactory):
       self.func_inv         = func_inv
       self.proto = None
 
-   
-
    #############################################################################
-   def addTxToMemoryPool(self, pytx):
-      if self.bdm and not self.bdm.getBDMState()=='Offline':
-         self.bdm.addNewZeroConfTx(pytx.serialize(), long(RightNow()), True)    
-      
+   def getProto(self):
+      return self.proto
 
 
    #############################################################################
@@ -467,7 +469,10 @@ class PyMessage(object):
       payload    = msgData.get(BINARY_CHUNK, length)
       payload    = verifyChecksum(payload, chksum)
 
-      self.payload = PayloadMap[self.cmd]().unserialize(payload)
+      try:
+         self.payload = PayloadMap[self.cmd]().unserialize(payload)
+      except KeyError:
+         raise UnknownNetworkPayload
 
       if self.magic != MAGIC_BYTES:
          raise NetworkIDError, 'Message has wrong network bytes!'
@@ -978,6 +983,7 @@ class PayloadAlert(object):
    command = 'alert'
 
    def __init__(self):
+      self.nonSigLength = 0
       self.version = 1
       self.relayUntil = 0
       self.expiration = 0
@@ -987,6 +993,7 @@ class PayloadAlert(object):
       self.minVersion = 0
       self.maxVersion = 0
       self.subVerSet  = []
+      self.priority   = 0
       self.comment    = ''
       self.statusBar  = ''
       self.reserved   = ''
@@ -994,20 +1001,61 @@ class PayloadAlert(object):
    
 
    def unserialize(self, toUnpack):
-      if isinstance(toUnpack, BinaryUnpacker):
-         blkData = toUnpack
-      else:
-         blkData = BinaryUnpacker( toUnpack )
+      alertData = BinaryUnpacker( toUnpack )
+      self.nonSigLength = alertData.get(INT8)
+      self.version = alertData.get(UINT32)
+      self.relayUntil = alertData.get(UINT64)
+      self.expiration = alertData.get(UINT64)
+      self.uniqueID = alertData.get(UINT32)
+      self.cancelVal = alertData.get(UINT32)
+      numCancel = alertData.get(INT8)
+      for i in range(numCancel):
+         self.cancelSet.append(alertData.get(UINT32))
+      self.minVersion = alertData.get(UINT32)
+      self.maxVersion = alertData.get(UINT32)
+      numSubVer = alertData.get(INT8)
+      for i in range(numSubVer):
+         self.subVerSet.append(alertData.get(VAR_STR))
+      self.priority = alertData.get(UINT32)
+      self.comment = alertData.get(VAR_STR)
+      self.statusBar = alertData.get(VAR_STR)
+      self.reserved = alertData.get(VAR_STR)
+      self.signature = alertData.get(VAR_STR)
 
       return self
 
    def serialize(self):
       bp = BinaryPacker()
+      bp.put(INT8, self.nonSigLength)
+      bp.put(UINT32, self.version)
+      bp.put(UINT64, self.expiration)
+      bp.put(UINT64, self.relayUntil)
+      bp.put(UINT32, self.uniqueID)
+      bp.put(UINT32, self.cancelVal)
+      bp.put(INT8, len(self.cancelSet))
+      for cancel in self.cancelSet:
+         bp.put(UINT32, cancel)
+      bp.put(UINT32, self.minVersion)
+      bp.put(UINT32, self.maxVersion)
+      bp.put(INT8, len(self.subVerSet))
+      for subVer in self.subVerSet:
+         bp.put(VAR_STR, subVer)
+      bp.put(UINT32, self.priority)
+      bp.put(VAR_STR, self.comment)
+      bp.put(VAR_STR, self.statusBar)
+      bp.put(VAR_STR, self.reserved)
+      bp.put(VAR_STR, self.signature)
+      
       return bp.getBinaryString()
 
 
    def pprint(self, nIndent=0):
-      print nIndent*'\t' + 'ALERT(...)'
+      print nIndent*'\t' + "ALERT:" + "\n" + \
+         nIndent*'\t' + ("version:%s" % self.version) + "\n" + \
+         nIndent*'\t' + ("comment:%s" % self.comment) + "\n" + \
+         nIndent*'\t' + ("statusBar:%s" % self.statusBar) + "\n" + \
+         nIndent*'\t' + ("reserved:%s" % self.reserved) + "\n"
+
 
 REJECT_MALFORMED_CODE = 0x01
 REJECT_INVALID_CODE = 0x10
@@ -1076,11 +1124,12 @@ class FakeClientFactory(ReconnectingClientFactory):
                 func_newTx=(lambda x: None), \
                 func_newBlock=(lambda x,y: None), \
                 func_inv=(lambda x: None)): pass
-   def addTxToMemoryPool(self, pytx): pass
+   def getProto(self): return None
    def handshakeFinished(self, protoObj): pass
    def clientConnectionLost(self, connector, reason): pass
    def connectionFailed(self, protoObj, reason): pass
    def sendTx(self, pytxObj): pass
+   def sendMessage(self, msgObj): pass
 
 ################################################################################
 # It seems we need to do this frequently when downloading headers & blocks

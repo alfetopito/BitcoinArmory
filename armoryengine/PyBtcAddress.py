@@ -1,6 +1,6 @@
 ################################################################################
 #                                                                              #
-# Copyright (C) 2011-2014, Armory Technologies, Inc.                           #
+# Copyright (C) 2011-2015, Armory Technologies, Inc.                           #
 # Distributed under the GNU Affero General Public License (AGPL v3)            #
 # See LICENSE or http://www.gnu.org/licenses/agpl.html                         #
 #                                                                              #
@@ -12,7 +12,7 @@ from armoryengine.ArmoryUtils import ADDRBYTE, hash256, binary_to_base58, \
    computeChecksum, getVersionInt, PYBTCWALLET_VERSION, bitset_to_int, \
    LOGDEBUG, Hash160ToScrAddr, int_to_bitset, UnserializeError, \
    hash160_to_addrStr, int_to_binary, BIGENDIAN, \
-   BadAddressError, checkAddrStrValid, binary_to_hex
+   BadAddressError, checkAddrStrValid, binary_to_hex, ENABLE_DETSIGN
 from armoryengine.BinaryPacker import BinaryPacker, UINT8, UINT16, UINT32, UINT64, \
    INT8, INT16, INT32, INT64, VAR_INT, VAR_STR, FLOAT, BINARY_CHUNK
 from armoryengine.BinaryUnpacker import BinaryUnpacker
@@ -189,7 +189,7 @@ class PyBtcAddress(object):
          self.timeRange[0]=2**32-1
 
       if blkNum==None:
-         if TheBDM.getBDMState()=='BlockchainReady':
+         if TheBDM.getState()==BDM_BLOCKCHAIN_READY:
             topBlk = TheBDM.getTopBlockHeight()
             self.blkRange[0] = long(min(self.blkRange[0], topBlk))
             self.blkRange[1] = long(max(self.blkRange[1], topBlk))
@@ -197,8 +197,10 @@ class PyBtcAddress(object):
          self.blkRange[0]  = long(min(self.blkRange[0], blkNum))
          self.blkRange[1]  = long(max(self.blkRange[1], blkNum))
 
-         if unixTime==None and TheBDM.getBDMState()=='BlockchainReady':
-            unixTime = TheBDM.getHeaderByHeight(blkNum).getTimestamp()
+         if unixTime==None and TheBDM.getState()==BDM_BLOCKCHAIN_READY:
+            if TheBDM.bdv().blockchain().hasHeaderByHeight(blkNum):
+               header = TheBDM.bdv().blockchain().getHeaderByHeight(blkNum)
+               unixTime = header.getTimestamp()
 
       if unixTime==None:
          unixTime = RightNow()
@@ -686,7 +688,8 @@ class PyBtcAddress(object):
 
    #############################################################################
    @TimeThisFunction
-   def generateDERSignature(self, binMsg, secureKdfOutput=None):
+   def generateDERSignature(self, binMsg, secureKdfOutput=None,
+                            DetSign=ENABLE_DETSIGN):
       """
       This generates a DER signature for this address using the private key.
       Obviously, if we don't have the private key, we throw an error.  Or if
@@ -708,7 +711,8 @@ class PyBtcAddress(object):
 
       try:
          secureMsg = SecureBinaryData(binMsg)
-         sig = CryptoECDSA().SignData(secureMsg, self.binPrivKey32_Plain)
+         sig = CryptoECDSA().SignData(secureMsg, self.binPrivKey32_Plain,
+                                      DetSign)
          sigstr = sig.toBinStr()
 
          rBin   = sigstr[:32 ]
@@ -979,54 +983,6 @@ class PyBtcAddress(object):
       binOut.put(UINT32, self.blkRange[1])
 
       return binOut.getBinaryString()
-
-   #############################################################################
-   def scanBlockchainForAddress(self, abortIfBDMBusy=False):
-      """
-      This method will return null output if the BDM is currently in the
-      middle of a scan.  You can use waitAsLongAsNecessary=True if you
-      want to wait for the previous scan AND the next scan.  Otherwise,
-      you can check for bal==-1 and then try again later...
-
-      This is particularly relevant if you know that an address has already
-      been scanned, and you expect this method to return immediately.  Thus,
-      you don't want to wait for any scan at all...
-
-      This one-stop-shop method has to be blocking.  You might want to
-      register the address and rescan asynchronously, skipping this method
-      entirely:
-
-         cppWlt = Cpp.BtcWallet()
-         cppWlt.addScrAddress_1_(Hash160ToScrAddr(self.getAddr160()))
-         TheBDM.registerScrAddr(Hash160ToScrAddr(self.getAddr160()))
-         TheBDM.rescanBlockchain(wait=False)
-
-         <... do some other stuff ...>
-
-         if TheBDM.getBDMState()=='BlockchainReady':
-            TheBDM.updateWalletsAfterScan(wait=True) # fast after a rescan
-            bal      = cppWlt.getBalance('Spendable')
-            utxoList = cppWlt.getUnspentTxOutList()
-         else:
-            <...come back later...>
-
-      """
-      if TheBDM.getBDMState()=='BlockchainReady' or \
-                            (TheBDM.isScanning() and not abortIfBDMBusy):
-         LOGDEBUG('Scanning blockchain for address')
-
-         # We are expecting this method to return balance
-         # and UTXO data, so we must make sure we're blocking.
-         cppWlt = Cpp.BtcWallet()
-         cppWlt.addScrAddress_1_(Hash160ToScrAddr(self.getAddr160()))
-         TheBDM.registerWallet(cppWlt, wait=True)
-         TheBDM.scanBlockchainForTx(cppWlt, wait=True)
-
-         utxoList = cppWlt.getSpendableTxOutList()
-         bal = cppWlt.getSpendableBalance(0, IGNOREZC)
-         return (bal, utxoList)
-      else:
-         return (-1, [])
 
    #############################################################################
    def unserialize(self, toUnpack):

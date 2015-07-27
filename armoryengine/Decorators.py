@@ -1,6 +1,6 @@
 ################################################################################
 #
-# Copyright (C) 2011-2014, Armory Technologies, Inc.                         
+# Copyright (C) 2011-2015, Armory Technologies, Inc.                         
 # Distributed under the GNU Affero General Public License (AGPL v3)
 # See LICENSE or http://www.gnu.org/licenses/agpl.html
 #
@@ -13,9 +13,12 @@
 #
 ################################################################################
 
-from armoryengine.ArmoryUtils import send_email, LOGERROR
+from armoryengine.ArmoryUtils import send_email, LOGERROR, LOGRAWDATA,\
+   CLI_OPTIONS
 import functools
 import sys
+from threading import Lock
+import traceback
 
 # Following this pattern to allow arguments to be passed to this decorator:
 # http://stackoverflow.com/questions/10176226/how-to-pass-extra-arguments-to-python-decorator
@@ -95,22 +98,8 @@ def catchErrsForJSON(func):
          #LOGERROR(errTypeStr)
          #LOGERROR(errValStr)
 
-         # Log each error line but don't return to the user. The user really
-         # doesn't need to see the trace. Also, unless directly called, the
-         # JSON functs will just lead back to where the JSON server started.
-         # The trace can go almost 30 levels deep! So, we'll limit the reported
-         # levels to 10 so that the logs aren't crushed.
-         while errFrame != None and errDepth < 10:
-            errFile = errFrame.f_code.co_filename
-            errFileStr = 'Error File = \'%s\'' % errFile
-            errFileNumStr = 'Error Line Number = \'%d\'' % errFrame.f_lineno
-            LOGERROR(errFileStr)
-            LOGERROR(errFileNumStr)
-            errFrame = errFrame.f_back
-            errDepth += 1
+         traceback.print_exc(None if CLI_OPTIONS.doDebug else 10)
 
-         if errFrame != None and errDepth == 10:
-            LOGERROR('Trace stopped so as to not overwhelm the logs')
 
       finally:
          # Delete circular references and return the error dict.
@@ -118,4 +107,24 @@ def catchErrsForJSON(func):
             del errTB 
             del errFrame  # Not totally sure this is necessary. Just in case....
          return rv
+   return inner
+
+#Makes sure only a single thread is running the method at a given time,
+#using threading.Lock() 
+def singleEntrantMethod(func):
+   @functools.wraps(func)  # Pull in certain "helper" data from dec'd func
+   def inner(self, *args, **kwargs):
+      #if self doesn't have attribute mutex, give it one
+      try:
+         self.mutex.acquire()
+      except AttributeError:
+         self.mutex = Lock()
+         self.mutex.acquire()
+      try:
+         rt = func(self, *args, **kwargs)
+      except:
+         raise
+      finally:
+         self.mutex.release()
+      return rt
    return inner

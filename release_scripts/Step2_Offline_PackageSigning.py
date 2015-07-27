@@ -1,4 +1,11 @@
 #! /usr/bin/python
+################################################################################
+#                                                                              #
+# Copyright (C) 2011-2015, Armory Technologies, Inc.                           #
+# Distributed under the GNU Affero General Public License (AGPL v3)            #
+# See LICENSE or http://www.gnu.org/licenses/agpl.html                         #
+#                                                                              #
+################################################################################
 
 # Take a directory full of things to be signed, and do the right thing.
 # Make sure you cert-sign the windows installers, first
@@ -67,12 +74,14 @@ def logprint(s):
 srcGitRepo  = checkExists(os.path.join(inDir, 'BitcoinArmory'))
 srcInstalls = checkExists(os.path.join(inDir, 'installers'))
 srcAnnounce = checkExists(os.path.join(inDir, 'unsignedannounce'))
+srcRelease  = checkExists(os.path.join(inDir, 'release_scripts'))
 srcCoreSHA  = checkExists(os.path.join(inDir, 'SHA256SUMS.asc'), 'skip')
 
 # Check that all the paths expected from step 1 actually exist
 dstGitRepo  =               os.path.join(outDir, 'BitcoinArmory')
 dstInstalls = makeOutputDir(os.path.join(outDir, 'installers'))
 dstAnnounce = makeOutputDir(os.path.join(outDir, 'signedannounce'))
+dstRelease  = makeOutputDir(os.path.join(outDir, 'release_scripts'))
 
 # Scan the list of files in installers dir to get latest 
 instList = [fn for fn in os.listdir(srcInstalls)]
@@ -200,8 +209,9 @@ for f in filesToSign:
 
 newHashes = getAllHashes(filesToSign)
 #hashname = 'armory_%s%s_sha256sum.txt' % (topVerStr, topVerType)
-hashname = getDstPath('SHAFILE_TXT')
-hashpath = os.path.join(dstInstalls, hashname)
+#hashname = getDstPath('SHAFILE_TXT')
+#hashpath = os.path.join(dstInstalls, hashname)
+hashpath = getDstPath('SHAFILE_TXT')
 with open(hashpath, 'w') as hashfile:
    for fn,sha2 in newHashes:
       basefn = os.path.basename(fn) 
@@ -279,7 +289,7 @@ for pkgName,pkgInfo in masterPkgList.iteritems():
       outputStr = ['ArmoryOffline%s' % typeSuffix, 
                    topVerStr, 
                    pkgInfo['OSNameLink'],
-                   pkgInfo['BundleOSVar'],
+                   pkgInfo['BundleDLLVar'],
                    pkgInfo['OSArchLink'],
                    os.path.join(bucketReleases, fn),                       
                    getFileHash(dstInstalls, fn)]
@@ -399,6 +409,10 @@ execAndWait('git tag -s %s -u %s -m "%s"' % (gittag, gpgKeyID, gitmsg), cwd=dstG
 out,err = execAndWait('git tag -v %s' % gittag, cwd=dstGitRepo)
 logprint(out)
 logprint(err)
+
+################################################################################
+# Copy the release scripts over to the output dir to make sure Step3 has them
+shutil.copytree(srcRelease, dstRelease)
 
 
 logprint('*'*80)

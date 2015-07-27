@@ -1,3 +1,10 @@
+################################################################################
+#                                                                              #
+# Copyright (C) 2011-2015, Armory Technologies, Inc.                           #
+# Distributed under the GNU Affero General Public License (AGPL v3)            #
+# See LICENSE or http://www.gnu.org/licenses/agpl.html                         #
+#                                                                              #
+################################################################################
 from os import path
 import platform
 import sys
@@ -46,8 +53,8 @@ class LockboxDisplayModel(QAbstractTableModel):
       lwlt = self.main.cppLockboxWltMap[lbID]
 
       nTx, bal = 0, 0
-      if TheBDM.getBDMState()=='BlockchainReady':
-         nTx = len(lwlt.getTxLedger())
+      if TheBDM.getState()==BDM_BLOCKCHAIN_READY:
+         nTx = lwlt.getWltTotalTxnCount()
          bal = lwlt.getFullBalance()
 
       if role==Qt.DisplayRole:
@@ -70,13 +77,19 @@ class LockboxDisplayModel(QAbstractTableModel):
          elif col==LOCKBOXCOLS.Key4: 
             return QVariant(self.getKeyDisp(lbox, 4))
          elif col==LOCKBOXCOLS.NumTx: 
-            if not TheBDM.getBDMState()=='BlockchainReady':
+            if not TheBDM.getState()==BDM_BLOCKCHAIN_READY:
                return QVariant('(...)') 
             return QVariant(nTx)
          elif col==LOCKBOXCOLS.Balance: 
-            if not TheBDM.getBDMState()=='BlockchainReady':
+            if not TheBDM.getState()==BDM_BLOCKCHAIN_READY:
                return QVariant('(...)') 
-            return QVariant(coin2str(bal, maxZeros=2))
+            
+            if lbox.isEnabled == True:
+               return QVariant(coin2str(bal, maxZeros=2))
+            
+            scanStr = 'Scanning: %d%%' % (self.main.walletSideScanProgress[lbID])
+            return QVariant(scanStr)
+            
          elif col==LOCKBOXCOLS.UnixTime: 
             return QVariant(str(lbox.createDate))
 
@@ -114,6 +127,16 @@ class LockboxDisplayModel(QAbstractTableModel):
          return QVariant( int(Qt.AlignHCenter | Qt.AlignVCenter) )
 
 
+   def flags(self, index, role=Qt.DisplayRole):
+      if role == Qt.DisplayRole:
+         lbox = self.boxList[index.row()]
+         
+         rowFlag = Qt.ItemIsEnabled | Qt.ItemIsSelectable
+         
+         if lbox.isEnabled is False:      
+            return Qt.ItemFlags()      
+            
+         return rowFlag      
 
 
 class LockboxDisplayProxy(QSortFilterProxyModel):
@@ -150,12 +173,12 @@ class LockboxDisplayProxy(QSortFilterProxyModel):
          tRight = getDouble(idxRight, COL.UnixTime)
          return (tLeft<tRight)
       elif thisCol==COL.NumTx:
-         if TheBDM.getBDMState()=='BlockchainReady':
+         if TheBDM.getState()==BDM_BLOCKCHAIN_READY:
             ntxLeft  = getInt(idxLeft,  COL.NumTx)
             ntxRight = getInt(idxRight, COL.NumTx)
             return (ntxLeft < ntxRight)
       elif thisCol==COL.Balance:
-         if TheBDM.getBDMState()=='BlockchainReady':
+         if TheBDM.getState()==BDM_BLOCKCHAIN_READY:
             btcLeft  = getDouble(idxLeft,  COL.Balance)
             btcRight = getDouble(idxRight, COL.Balance)
             return (abs(btcLeft) < abs(btcRight))
